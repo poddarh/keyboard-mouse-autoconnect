@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "keyboard-mouse-autoconnect"
+version = "0.1.0"
+description = "Connect paired Bluetooth devices when a configured macOS display appears."
+requires-python = ">=3.11"
+authors = [{ name = "Local" }]
+readme = "README.md"
+license = { text = "MIT" }
+
+[project.scripts]
+kmautoconnect = "kmautoconnect.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
