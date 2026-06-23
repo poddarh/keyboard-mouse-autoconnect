@@ -111,6 +111,24 @@ def build_parser() -> argparse.ArgumentParser:
     init_config.add_argument("--force", action="store_true", help="Overwrite an existing config.")
     init_config.set_defaults(func=cmd_init_config)
 
+    setup = subparsers.add_parser(
+        "setup",
+        help="Prompt for the current display/devices, write config, and install the service.",
+    )
+    add_subcommand_config_arg(setup)
+    setup.add_argument("--force", action="store_true", help="Overwrite an existing config.")
+    setup.add_argument(
+        "--skip-service",
+        action="store_true",
+        help="Write config but do not install or start the LaunchAgent.",
+    )
+    setup.add_argument(
+        "--yes",
+        action="store_true",
+        help="Accept defaults without prompting when possible.",
+    )
+    setup.set_defaults(func=cmd_setup)
+
     connect_now = subparsers.add_parser(
         "connect-now",
         help="Connect devices for displays that are attached right now, then exit.",
@@ -209,6 +227,37 @@ def cmd_init_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    config_path: Path = args.config.expanduser()
+    if config_path.exists() and not args.force:
+        if args.yes or not confirm(f"{config_path} already exists. Replace it?", default=False):
+            print(f"Leaving existing config untouched: {config_path}")
+            if not args.skip_service:
+                maybe_install_service(config_path, sys.executable, yes=args.yes)
+            return 0
+
+    displays = current_displays()
+    if not displays:
+        raise UserFacingError("No attached displays were found.")
+
+    devices = paired_bluetooth_devices()
+    selected_display = choose_display(displays, yes=args.yes)
+    selected_devices = choose_devices(devices, yes=args.yes)
+    if not selected_devices:
+        raise UserFacingError("No Bluetooth devices selected.")
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(config_for_link(selected_display, selected_devices), encoding="utf-8")
+    print(f"Wrote {config_path}")
+
+    if args.skip_service:
+        print("Skipped LaunchAgent install.")
+        return 0
+
+    maybe_install_service(config_path, sys.executable, yes=args.yes)
+    return 0
+
+
 def cmd_connect_now(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     connector = BluetoothConnector.from_environment()
@@ -251,7 +300,11 @@ def cmd_install_launch_agent(args: argparse.Namespace) -> int:
     config_path = args.config.expanduser()
     if not config_path.exists():
         raise UserFacingError(f"{config_path} does not exist. Run init-config first.")
+    install_launch_agent(config_path, args.python_bin)
+    return 0
 
+
+def install_launch_agent(config_path: Path, python_bin: str) -> Path:
     agent_path = launch_agent_path()
     log_dir = DEFAULT_LOG_DIR
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -261,7 +314,7 @@ def cmd_install_launch_agent(args: argparse.Namespace) -> int:
     plist = {
         "Label": LAUNCH_AGENT_ID,
         "ProgramArguments": [
-            args.python_bin,
+            python_bin,
             "-m",
             "kmautoconnect.cli",
             "--config",
@@ -286,7 +339,148 @@ def cmd_install_launch_agent(args: argparse.Namespace) -> int:
     run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCH_AGENT_ID}"], check=False)
     print(f"Installed and started {agent_path}")
     print(f"Logs: {log_dir}")
-    return 0
+    return agent_path
+
+
+def maybe_install_service(config_path: Path, python_bin: str, *, yes: bool) -> None:
+    connector = BluetoothConnector.find()
+    if connector is None:
+        print("No Bluetooth connector found.")
+        print("Install the recommended helper with: brew install blueutil")
+        if yes or not confirm("Install and launch the service anyway?", default=False):
+            print("Skipped LaunchAgent install because Bluetooth connect support is missing.")
+            return
+    install_launch_agent(config_path, python_bin)
+
+
+def choose_display(displays: list[Display], *, yes: bool) -> Display:
+    if yes or len(displays) == 1:
+        selected = displays[0]
+        print(f"Selected display: {display_label(selected)}")
+        return selected
+
+    print("Attached displays:")
+    for index, display in enumerate(displays, start=1):
+        print(f"  {index}. {display_label(display)}")
+    selected_index = prompt_index("Choose the display to link", len(displays), default=1)
+    return displays[selected_index - 1]
+
+
+def choose_devices(devices: list[BluetoothDevice], *, yes: bool) -> list[BluetoothDevice]:
+    connected = [device for device in devices if device.connected is True]
+    candidates = connected or devices
+    if not candidates:
+        raise UserFacingError("No paired Bluetooth devices were found.")
+
+    if yes:
+        selected = connected or candidates
+        print("Selected Bluetooth devices:")
+        for device in selected:
+            print(f"  - {device_label(device)}")
+        return selected
+
+    if connected:
+        print("Currently connected Bluetooth devices:")
+    else:
+        print("No connected Bluetooth devices found. Paired Bluetooth devices:")
+    for index, device in enumerate(candidates, start=1):
+        print(f"  {index}. {device_label(device)}")
+
+    if connected:
+        default = ",".join(str(index) for index in range(1, len(candidates) + 1))
+        prompt = "Choose devices to connect with this display"
+    else:
+        default = "1"
+        prompt = "Choose devices to connect with this display"
+    selected_indexes = prompt_indexes(prompt, len(candidates), default=default)
+    return [candidates[index - 1] for index in selected_indexes]
+
+
+def prompt_index(prompt: str, count: int, *, default: int) -> int:
+    while True:
+        value = input(f"{prompt} [{default}]: ").strip()
+        if not value:
+            return default
+        try:
+            selected = int(value)
+        except ValueError:
+            print("Enter a number.")
+            continue
+        if 1 <= selected <= count:
+            return selected
+        print(f"Enter a number from 1 to {count}.")
+
+
+def prompt_indexes(prompt: str, count: int, *, default: str) -> list[int]:
+    while True:
+        value = input(f"{prompt} [{default}]: ").strip() or default
+        try:
+            selected = sorted({int(item.strip()) for item in value.split(",") if item.strip()})
+        except ValueError:
+            print("Enter comma-separated numbers.")
+            continue
+        if selected and all(1 <= index <= count for index in selected):
+            return selected
+        print(f"Enter one or more numbers from 1 to {count}.")
+
+
+def confirm(prompt: str, *, default: bool) -> bool:
+    suffix = "Y/n" if default else "y/N"
+    while True:
+        value = input(f"{prompt} [{suffix}]: ").strip().casefold()
+        if not value:
+            return default
+        if value in {"y", "yes"}:
+            return True
+        if value in {"n", "no"}:
+            return False
+        print("Enter yes or no.")
+
+
+def config_for_link(display: Display, devices: list[BluetoothDevice]) -> str:
+    lines = [
+        "# Generated by kmautoconnect setup.",
+        "poll_interval = 5",
+        "connect_on_start = true",
+        "connect_retries = 3",
+        "retry_delay = 2",
+        "",
+        "[[links]]",
+        f"name = {toml_string(display.name)}",
+        f"display_name = {toml_string(display.name)}",
+    ]
+    if display.serial:
+        lines.append(f"display_serial = {toml_string(display.serial)}")
+    if display.vendor_id:
+        lines.append(f"display_vendor_id = {toml_string(display.vendor_id)}")
+    if display.product_id:
+        lines.append(f"display_product_id = {toml_string(display.product_id)}")
+    lines.extend(["", "devices = ["])
+    for device in devices:
+        name = device.name or device.address
+        lines.append(
+            f"  {{ name = {toml_string(name)}, address = {toml_string(device.address)} }},"
+        )
+    lines.extend(["]", ""])
+    return "\n".join(lines)
+
+
+def toml_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def display_label(display: Display) -> str:
+    details = []
+    if display.serial:
+        details.append(f"serial {display.serial}")
+    if display.resolution:
+        details.append(display.resolution)
+    return f"{display.name} ({', '.join(details)})" if details else display.name
+
+
+def device_label(device: BluetoothDevice) -> str:
+    name = device.name or "Unnamed device"
+    return f"{name} ({device.address}, {connected_label(device.connected)})"
 
 
 def cmd_uninstall_launch_agent(_args: argparse.Namespace) -> int:
@@ -497,15 +691,22 @@ class BluetoothConnector:
 
     @classmethod
     def from_environment(cls) -> "BluetoothConnector":
+        connector = cls.find()
+        if connector:
+            return connector
+        raise UserFacingError(
+            "No Bluetooth connector found. Install one with: brew install blueutil"
+        )
+
+    @classmethod
+    def find(cls) -> "BluetoothConnector | None":
         blueutil = shutil.which("blueutil")
         if blueutil:
             return cls("blueutil", blueutil)
         bluetooth_connector = shutil.which("BluetoothConnector")
         if bluetooth_connector:
             return cls("BluetoothConnector", bluetooth_connector)
-        raise UserFacingError(
-            "No Bluetooth connector found. Install one with: brew install blueutil"
-        )
+        return None
 
     def connect(self, address: str) -> subprocess.CompletedProcess[str]:
         normalized = normalize_address(address)

@@ -1,8 +1,10 @@
 import unittest
 
 from kmautoconnect.cli import (
+    BluetoothDevice,
     Display,
     bluetooth_devices_from_system_profiler,
+    config_for_link,
     normalize_address,
 )
 
@@ -54,6 +56,19 @@ class CliTests(unittest.TestCase):
     def test_normalize_address_accepts_common_formats(self) -> None:
         self.assertEqual(normalize_address("80:4A:14:7B:7A:4D"), "80-4a-14-7b-7a-4d")
         self.assertEqual(normalize_address("804A147B7A4D"), "80-4a-14-7b-7a-4d")
+
+    def test_config_for_link_uses_display_and_devices(self) -> None:
+        display = Display(name="DELL UP3017", serial="SERIAL1")
+        devices = [
+            BluetoothDevice(name="Magic Keyboard", address="80-4a-14-7b-7a-4d", connected=True),
+            BluetoothDevice(name="Magic Trackpad", address="d0-c0-50-bb-42-c2", connected=True),
+        ]
+
+        config = config_for_link(display, devices)
+
+        self.assertIn('display_name = "DELL UP3017"', config)
+        self.assertIn('display_serial = "SERIAL1"', config)
+        self.assertIn('{ name = "Magic Keyboard", address = "80-4a-14-7b-7a-4d" }', config)
 
 
 if __name__ == "__main__":

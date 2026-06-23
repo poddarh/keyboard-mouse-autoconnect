@@ -25,20 +25,42 @@ brew install blueutil
 From this repo:
 
 ```sh
-python3 -m pip install -e .
-kmautoconnect init-config
-kmautoconnect list-displays
-kmautoconnect list-bluetooth
+./setup.sh
 ```
 
-Edit the generated config:
+The setup script will:
+
+- create `.venv` if it does not already exist
+- install the project into that virtual environment
+- prompt you to choose from currently attached displays
+- default to the Bluetooth devices that are currently connected
+- write `~/.config/keyboard-mouse-autoconnect/config.toml`
+- install and start the macOS LaunchAgent by default
+
+If the Bluetooth helper is missing, install it and rerun setup:
+
+```sh
+brew install blueutil
+./setup.sh
+```
+
+You can also run the guided setup directly after installing the package:
+
+```sh
+kmautoconnect setup
+```
+
+To write config without installing the background service:
+
+```sh
+kmautoconnect setup --skip-service
+```
+
+The generated config can be edited later:
 
 ```sh
 open ~/.config/keyboard-mouse-autoconnect/config.toml
 ```
-
-Use the display name, and preferably the display serial if macOS reports one.
-Use the Bluetooth addresses for your paired keyboard and mouse.
 
 Example:
 
@@ -92,9 +114,9 @@ Logs are written to:
 ## Verify the Tool
 
 ```sh
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-PYTHONPATH=src python3 -m kmautoconnect.cli list-displays
-PYTHONPATH=src python3 -m kmautoconnect.cli list-bluetooth
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/kmautoconnect list-displays
+.venv/bin/kmautoconnect list-bluetooth
 ```
 
 If `connect-now` or `watch` says no Bluetooth connector was found, install
